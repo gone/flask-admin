@@ -86,6 +86,9 @@ class InlineModelFormField(FormField):
             if name != self._pk:
                 field.populate_obj(obj, name)
 
+        if hasattr(self.form, 'postprocess_obj'):
+            self.form.postprocess_obj(obj, name)
+
 
 class InlineFormField(FormField):
     """
