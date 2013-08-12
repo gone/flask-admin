@@ -3,6 +3,7 @@ from re import sub
 
 from flask import Blueprint, render_template, url_for, abort, g
 from flask.ext.admin import babel
+from flask.ext.admin._compat import with_metaclass
 from flask.ext.admin import helpers as h
 
 
@@ -34,7 +35,13 @@ def expose_plugview(url='/'):
         .. versionadded:: 1.0.4
     """
     def wrap(v):
-        return expose(url, v.methods)(v.as_view(v.__name__))
+        handler = expose(url, v.methods)
+
+        if hasattr(v, 'as_view'):
+            return handler(v.as_view(v.__name__))
+        else:
+            return handler(v)
+
     return wrap
 
 
@@ -84,7 +91,11 @@ class AdminViewMeta(type):
                 setattr(cls, p, _wrap_view(attr))
 
 
-class BaseView(object):
+class BaseViewClass(object):
+    pass
+
+
+class BaseView(with_metaclass(AdminViewMeta, BaseViewClass)):
     """
         Base administrative view.
 
@@ -95,8 +106,6 @@ class BaseView(object):
                 def index(self):
                     return 'Hello World!'
     """
-    __metaclass__ = AdminViewMeta
-
     @property
     def _template_args(self):
         """
@@ -128,7 +137,8 @@ class BaseView(object):
 
         return args
 
-    def __init__(self, name=None, category=None, endpoint=None, url=None, static_folder=None, static_url_path=None):
+    def __init__(self, name=None, category=None, endpoint=None, url=None,
+                 static_folder=None, static_url_path=None):
         """
             Constructor.
 
@@ -148,6 +158,9 @@ class BaseView(object):
                 and '/admin/' prefix won't be applied.
             :param static_url_path:
                 Static URL Path. If provided, this specifies the path to the static url directory.
+            :param debug:
+                Optional debug flag. If set to `True`, will rethrow exceptions in some cases, so Werkzeug
+                debugger can catch them.
         """
         self.name = name
         self.category = category
@@ -162,7 +175,7 @@ class BaseView(object):
 
         # Default view
         if self._default_view is None:
-            raise Exception('Attempted to instantiate admin view %s without default view' % self.__class__.__name__)
+            raise Exception(u'Attempted to instantiate admin view %s without default view' % self.__class__.__name__)
 
     def create_blueprint(self, admin):
         """
@@ -174,7 +187,7 @@ class BaseView(object):
         # If endpoint name is not provided, get it from the class name
         if self.endpoint is None:
             self.endpoint = self.__class__.__name__.lower()
-            
+
         # If the static_url_path is not provided, use the admin's
         if not self.static_url_path:
             self.static_url_path = admin.static_url_path
@@ -227,6 +240,7 @@ class BaseView(object):
         """
         # Store self as admin_view
         kwargs['admin_view'] = self
+        kwargs['admin_base_template'] = self.admin.base_template
 
         # Provide i18n support even if flask-babel is not installed
         # or enabled.
@@ -247,6 +261,17 @@ class BaseView(object):
                 String to prettify
         """
         return sub(r'(?<=.)([A-Z])', r' \1', name)
+
+    def is_visible(self):
+        """
+            Override this method if you want dynamically hide or show administrative views
+            from Flask-Admin menu structure
+
+            By default, item is visible in menu.
+
+            Please note that item should be both visible and accessible to be displayed in menu.
+        """
+        return True
 
     def is_accessible(self):
         """
@@ -273,6 +298,13 @@ class BaseView(object):
         """
         if not self.is_accessible():
             return abort(404)
+
+    @property
+    def _debug(self):
+        if not self.admin or not self.admin.app:
+            return False
+
+        return self.admin.app.debug
 
 
 class AdminIndexView(BaseView):
@@ -347,6 +379,12 @@ class MenuItem(object):
 
         return view.url in self._children_urls
 
+    def is_visible(self):
+        if self._view is None:
+            return False
+
+        return self._view.is_visible()
+
     def is_accessible(self):
         if self._view is None:
             return False
@@ -357,12 +395,12 @@ class MenuItem(object):
         return self._view is None
 
     def get_children(self):
-        return [c for c in self._children if c.is_accessible()]
+        return [c for c in self._children if c.is_accessible() and c.is_visible()]
 
 
 class MenuLink(object):
     """
-        Menu additional links hierarchy.
+        Additional menu links.
     """
     def __init__(self, name, url=None, endpoint=None):
         self.name = name
@@ -371,6 +409,9 @@ class MenuLink(object):
 
     def get_url(self):
         return self.url or url_for(self.endpoint)
+
+    def is_visible(self):
+        return True
 
     def is_accessible(self):
         return True
@@ -385,7 +426,8 @@ class Admin(object):
                  index_view=None,
                  translations_path=None,
                  endpoint=None,
-                 static_url_path=None):
+                 static_url_path=None,
+                 base_template=None):
         """
             Constructor.
 
@@ -407,7 +449,9 @@ class Admin(object):
                 a single Flask application, you have to set a unique endpoint name for each instance.
             :param static_url_path:
                 Static URL Path. If provided, this specifies the default path to the static url directory for
-                all its views. Can be overriden in view configuration.
+                all its views. Can be overridden in view configuration.
+            :param base_template:
+                Override base HTML template for all static views. Defaults to `admin/base.html`.
         """
         self.app = app
 
@@ -427,6 +471,7 @@ class Admin(object):
         self.url = url or self.index_view.url
         self.static_url_path = static_url_path
         self.subdomain = subdomain
+        self.base_template = base_template or 'admin/base.html'
 
         # Add predefined index view
         self.add_view(self.index_view)
@@ -435,7 +480,7 @@ class Admin(object):
         self.locale_selector_func = None
 
         # Register with application
-        if app:
+        if app is not None:
             self._init_extension()
 
     def add_view(self, view):
@@ -489,7 +534,7 @@ class Admin(object):
                         return request.args.get('lang', 'en')
         """
         if self.locale_selector_func is not None:
-            raise Exception('Can not add locale_selector second time.')
+            raise Exception(u'Can not add locale_selector second time.')
 
         self.locale_selector_func = f
 
@@ -536,12 +581,12 @@ class Admin(object):
 
         for p in admins:
             if p.endpoint == self.endpoint:
-                raise Exception('Cannot have two Admin() instances with same'
-                                ' endpoint name.')
+                raise Exception(u'Cannot have two Admin() instances with same'
+                                u' endpoint name.')
 
             if p.url == self.url and p.subdomain == self.subdomain:
-                raise Exception('Cannot assign two Admin() instances with same'
-                                ' URL and subdomain to the same application.')
+                raise Exception(u'Cannot assign two Admin() instances with same'
+                                u' URL and subdomain to the same application.')
 
         admins.append(self)
         self.app.extensions['admin'] = admins

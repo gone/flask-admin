@@ -1,14 +1,16 @@
 import logging
 
 import pymongo
-from bson.objectid import ObjectId
+from bson import ObjectId
+from bson.errors import InvalidId
 
 from flask import flash
-from jinja2 import contextfunction
 
+from flask.ext.admin._compat import string_types
 from flask.ext.admin.babel import gettext, ngettext, lazy_gettext
 from flask.ext.admin.model import BaseModelView
 from flask.ext.admin.actions import action
+from flask.ext.admin.helpers import get_form_data
 
 from .filters import BasePyMongoFilter
 from .tools import parse_like_term
@@ -91,7 +93,7 @@ class ModelView(BaseModelView):
         """
         if self.column_searchable_list:
             for p in self.column_searchable_list:
-                if not isinstance(p, basestring):
+                if not isinstance(p, string_types):
                     raise ValueError('Expected string')
 
                 # TODO: Validation?
@@ -121,29 +123,11 @@ class ModelView(BaseModelView):
     def scaffold_form(self):
         raise NotImplemented()
 
-    @contextfunction
-    def get_list_value(self, context, model, name):
+    def _get_field_value(self, model, name):
         """
-            Returns value to be displayed in list view
-
-            :param context:
-                :py:class:`jinja2.runtime.Context`
-            :param model:
-                Model instance
-            :param name:
-                Field name
+            Get unformatted field value from the model
         """
-        column_fmt = self.column_formatters.get(name)
-        if column_fmt is not None:
-            return column_fmt(context, model, name)
-
-        value = model.get(name)
-
-        type_fmt = self.column_type_formatters.get(type(value))
-        if type_fmt is not None:
-            value = type_fmt(value)
-
-        return value
+        return model.get(name)
 
     def get_list(self, page, sort_column, sort_desc, search, filters,
                  execute=True):
@@ -177,7 +161,7 @@ class ModelView(BaseModelView):
                 if len(data) == 1:
                     query = data[0]
                 else:
-                    query['$AND'] = data
+                    query['$and'] = data
 
         # Search
         if self._search_supported and search:
@@ -222,6 +206,11 @@ class ModelView(BaseModelView):
 
         if sort_column:
             sort_by = [(sort_column, pymongo.DESCENDING if sort_desc else pymongo.ASCENDING)]
+        else:
+            order = self._get_default_order()
+
+            if order:
+                sort_by = [(order[0], pymongo.DESCENDING if order[1] else pymongo.ASCENDING)]
 
         # Pagination
         skip = None
@@ -236,6 +225,12 @@ class ModelView(BaseModelView):
 
         return count, results
 
+    def _get_valid_id(self, id):
+        try:
+            return ObjectId(id)
+        except InvalidId:
+            return id
+
     def get_one(self, id):
         """
             Return single model instance by ID
@@ -243,14 +238,13 @@ class ModelView(BaseModelView):
             :param id:
                 Model ID
         """
-        # TODO: Validate if it is valid ID
-        return self.coll.find_one({'_id': ObjectId(id)})
+        return self.coll.find_one({'_id': self._get_valid_id(id)})
 
     def edit_form(self, obj):
         """
             Create edit form from the MongoDB document
         """
-        return self._edit_form_class(**obj)
+        return self._edit_form_class(get_form_data(), **obj)
 
     def create_model(self, form):
         """
@@ -262,14 +256,17 @@ class ModelView(BaseModelView):
         try:
             self.pre_model_change(form, form.data)
             model = form.data
-            self.on_model_change(form, model)
+            self._on_model_change(form, model, True)
             self.coll.insert(model)
-            return True
-        except Exception, ex:
+        except Exception as ex:
             flash(gettext('Failed to create model. %(error)s', error=str(ex)),
-                'error')
+                  'error')
             logging.exception('Failed to create model')
             return False
+        else:
+            self.after_model_change(form, model, True)
+
+        return True
 
     def update_model(self, form, model):
         """
@@ -283,16 +280,19 @@ class ModelView(BaseModelView):
         try:
             self.pre_model_change(form, model)
             model.update(form.data)
-            self.on_model_change(form, model)
+            self._on_model_change(form, model, False)
 
             pk = self.get_pk_value(model)
             self.coll.update({'_id': pk}, model)
-            return True
-        except Exception, ex:
+        except Exception as ex:
             flash(gettext('Failed to update model. %(error)s', error=str(ex)),
-                'error')
+                  'error')
             logging.exception('Failed to update model')
             return False
+        else:
+            self.after_model_change(form, model, False)
+
+        return True
 
     def delete_model(self, model):
         """
@@ -310,9 +310,9 @@ class ModelView(BaseModelView):
             self.on_model_delete(model)
             self.coll.remove({'_id': pk})
             return True
-        except Exception, ex:
+        except Exception as ex:
             flash(gettext('Failed to delete model. %(error)s', error=str(ex)),
-                'error')
+                  'error')
             logging.exception('Failed to delete model')
             return False
 
@@ -333,13 +333,12 @@ class ModelView(BaseModelView):
 
             # TODO: Optimize me
             for pk in ids:
-                self.coll.remove({'_id': ObjectId(pk)})
+                self.coll.remove({'_id': self._get_valid_id(pk)})
                 count += 1
 
             flash(ngettext('Model was successfully deleted.',
                            '%(count)s models were successfully deleted.',
                            count,
                            count=count))
-        except Exception, ex:
-            flash(gettext('Failed to delete models. %(error)s', error=str(ex)),
-                'error')
+        except Exception as ex:
+            flash(gettext('Failed to delete models. %(error)s', error=str(ex)), 'error')

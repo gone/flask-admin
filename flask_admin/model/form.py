@@ -1,6 +1,7 @@
 import inspect
 
 from flask.ext.admin.form import BaseForm
+from flask.ext.admin._compat import iteritems
 
 
 def converts(*args):
@@ -37,8 +38,15 @@ class InlineFormAdmin(object):
             if not hasattr(self, k):
                 setattr(self, k, None)
 
-        for k, v in kwargs.iteritems():
+        for k, v in iteritems(kwargs):
             setattr(self, k, v)
+
+    def get_form(self):
+        """
+            If you want to use completely custom form for inline field, you can override
+            Flask-Admin form generation logic by overriding this method and returning your form.
+        """
+        return None
 
     def postprocess_form(self, form_class):
         """
@@ -48,13 +56,24 @@ class InlineFormAdmin(object):
 
                 class MyInlineForm(InlineFormAdmin):
                     def postprocess_form(self, form):
-                        form.value = wtf.TextField('value')
+                        form.value = TextField('value')
                         return form
 
                 class MyAdmin(ModelView):
                     inline_models = (MyInlineForm(ValueModel),)
         """
         return form_class
+
+    def on_model_change(self, form, model):
+        """
+            Called when inline model is about to be saved.
+
+            :param form:
+                Inline form
+            :param model:
+                Model
+        """
+        pass
 
 
 class ModelConverterBase(object):
@@ -93,8 +112,8 @@ class ModelConverterBase(object):
         return None
 
     def get_form(self, model, base_class=BaseForm,
-                only=None, exclude=None,
-                field_args=None):
+                 only=None, exclude=None,
+                 field_args=None):
         raise NotImplemented()
 
 
@@ -146,3 +165,11 @@ class InlineModelConverterBase(object):
             return p
 
         return None
+
+
+class FieldPlaceholder(object):
+    """
+        Field placeholder for model convertors.
+    """
+    def __init__(self, field):
+        self.field = field

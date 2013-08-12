@@ -4,6 +4,8 @@ Quick Start
 This page gives quick introduction to Flask-Admin library. It is assumed that reader has some prior
 knowledge of the `Flask <http://flask.pocoo.org/>`_ framework.
 
+If you're Django user, you might also find :doc:`django_migration` guide helpful.
+
 Introduction
 ------------
 
@@ -24,14 +26,16 @@ Here is absolutely valid administrative piece::
         def test(self):
             return self.render('admin/test.html')
 
+If user will hit `index` view, `admin/myindex.html` template will be rendered. Same for `test` view.
+
 So, how does it help structuring administrative interface? With such building blocks, you're
 implementing reusable functional pieces that are highly customizable.
 
 For example, Flask-Admin provides ready-to-use SQLAlchemy model interface. It is implemented as a
-class which accepts two parameters: model and a database session. While it exposes some
+class which accepts two parameters: model class and a database session. While it exposes some
 class-level variables which change behavior of the interface (somewhat similar to django.contrib.admin),
-nothing prohibits you from overriding form creation logic, database access methods or extending existing
-functionality.
+nothing prohibits you from inheriting from it and override form creation logic, database access methods
+or extend existing functionality by adding more views.
 
 Initialization
 --------------
@@ -199,9 +203,11 @@ is not provided. Model-based views will be explained in the next section.
 Model Views
 -----------
 
-Flask-Admin comes with built-in SQLAlchemy model administrative interface. It is very easy to use::
+Flask-Admin comes with built-in few ORM backends.
 
-    from flask.ext.admin.contrib.sqlamodel import ModelView
+Lets pick SQLAlchemy backend. It is very easy to use::
+
+    from flask.ext.admin.contrib.sqla import ModelView
 
     # Flask and Flask-SQLAlchemy initialization here
 
@@ -224,7 +230,7 @@ If you want to customize model views, you have two options:
 For example, if you want to disable model creation, show only 'login' and 'email' columns in the list view,
 you can do something like this::
 
-    from flask.ext.admin.contrib.sqlamodel import ModelView
+    from flask.ext.admin.contrib.sqla import ModelView
 
     # Flask and Flask-SQLAlchemy initialization here
 
@@ -260,7 +266,7 @@ therefore should use a ``SelectField``::
 It is relatively easy to add support for different database backends (Mongo, etc) by inheriting from :class:`~flask.ext.admin.model.BaseModelView`.
 class and implementing database-related methods.
 
-Please refer to :mod:`flask.ext.admin.contrib.sqlamodel` documentation on how to customize behavior of model-based administrative views.
+Please refer to :mod:`flask.ext.admin.contrib.sqla` documentation on how to customize behavior of model-based administrative views.
 
 File Admin
 ----------

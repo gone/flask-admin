@@ -1,3 +1,4 @@
+{# ---------------------- Pager -------------------------- #}
 {% macro pager(page, pages, generator) -%}
 {% if pages > 1 %}
 <div class="pagination">
@@ -25,7 +26,7 @@
     </li>
     {% else %}
     <li class="disabled">
-        <a href="#">&laquo;</a>
+        <a href="javascript:void(0)">&laquo;</a>
     </li>
     {% endif %}
     {% if page > 0 %}
@@ -34,14 +35,14 @@
     </li>
     {% else %}
     <li class="disabled">
-        <a href="#">&lt;</a>
+        <a href="javascript:void(0)">&lt;</a>
     </li>
     {% endif %}
 
     {% for p in range(min, max) %}
     {% if page == p %}
     <li class="active">
-        <a href="#">{{ p + 1 }}</a>
+        <a href="javascript:void(0)">{{ p + 1 }}</a>
     </li>
     {% else %}
     <li>
@@ -56,7 +57,7 @@
     </li>
     {% else %}
     <li class="disabled">
-        <a href="#">&gt;</a>
+        <a href="javascript:void(0)">&gt;</a>
     </li>
     {% endif %}
     {% if max < pages %}
@@ -65,7 +66,7 @@
     </li>
     {% else %}
     <li class="disabled">
-        <a href="#">&raquo;</a>
+        <a href="javascript:void(0)">&raquo;</a>
     </li>
     {% endif %}
     </ul>
@@ -73,8 +74,10 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro render_field(form, field, set_focus=False) %}
-  <div class="control-group{{ ' error' if field.errors }}">
+{# ---------------------- Forms -------------------------- #}
+{% macro render_field(form, field, set_focus=False, kwargs={}) %}
+  {% set direct_error = h.is_field_error(field.errors) %}
+  <div class="control-group{{ ' error' if direct_error else '' }}">
     <div class="control-label">
       {{ field.label.text }}
       {% if h.is_required_form_field(field) %}
@@ -86,16 +89,16 @@
     <div class="controls">
     <div>
       {% if set_focus %}
-      {{ field(autofocus='autofocus')|safe }}
+      {{ field(autofocus='autofocus', **kwargs)|safe }}
       {% else %}
-      {{ field()|safe }}
+      {{ field(**kwargs)|safe }}
       {% endif %}
     </div>
     {% if field.description %}
     <p class="help-block">{{ field.description }}</p>
     {% endif %}
-    {% if field.errors %}
-      <ul class="input-errors">
+    {% if direct_error %}
+      <ul{% if direct_error %} class="input-errors"{% endif %}>
       {% for e in field.errors if e is string %}
         <li>{{ e }}</li>
       {% endfor %}
@@ -105,16 +108,23 @@
   </div>
 {% endmacro %}
 
-{% macro render_form_fields(form, set_focus=True) %}
-    {{ form.hidden_tag() if form.hidden_tag is defined }}
+{% macro render_form_fields(form, set_focus=True, widget_args={}) %}
+    {% if form.hidden_tag is defined %}
+        {{ form.hidden_tag() }}
+    {% else %}
+        {% for f in form if f.type == 'HiddenField' %}
+            {{ f }}
+        {% endfor %}
+    {% endif %}
 
     {% for f in form if f.type != 'HiddenField' and f.type != 'CSRFTokenField' %}
-      {{ render_field(form, f, not loop.index0 and set_focus) }}
+      {% set kwargs = widget_args.get(f.name, {}) %}
+      {{ render_field(form, f, not loop.index0 and set_focus, kwargs) }}
     {% endfor %}
 {% endmacro %}
 
-{% macro form_tag() %}
-    <form action="" method="POST" class="form-horizontal"{% if form.has_file_field %} enctype="multipart/form-data"{% endif %}>
+{% macro form_tag(form=None) %}
+    <form action="" method="POST" class="form-horizontal" enctype="multipart/form-data">
       <fieldset>
         {{ caller() }}
       </fieldset>
@@ -135,10 +145,9 @@
     </div>
 {% endmacro %}
 
-{% macro render_form(form, cancel_url, extra=None) -%}
+{% macro render_form(form, cancel_url, extra=None, widget_args={}) -%}
     {% call form_tag() %}
-        {{ render_form_fields(form) }}
+        {{ render_form_fields(form, widget_args=widget_args) }}
         {{ render_form_buttons(cancel_url, extra) }}
     {% endcall %}
 {% endmacro %}
-

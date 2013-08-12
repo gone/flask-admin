@@ -1,7 +1,10 @@
 from nose.tools import eq_, ok_, raises
 
-from flask.ext import wtf
-from flask.ext.admin.contrib.sqlamodel import ModelView
+from wtforms import fields
+
+from flask.ext.admin import form
+from flask.ext.admin._compat import iteritems
+from flask.ext.admin.contrib.sqla import ModelView
 
 from . import setup
 
@@ -10,11 +13,10 @@ class CustomModelView(ModelView):
     def __init__(self, model, session,
                  name=None, category=None, endpoint=None, url=None,
                  **kwargs):
-        for k, v in kwargs.iteritems():
+        for k, v in iteritems(kwargs):
             setattr(self, k, v)
 
-        super(CustomModelView, self).__init__(model, session,
-                                              name, category,
+        super(CustomModelView, self).__init__(model, session, name, category,
                                               endpoint, url)
 
 
@@ -33,6 +35,7 @@ def create_models(db):
         test3 = db.Column(db.Text)
         test4 = db.Column(db.UnicodeText)
         bool_field = db.Column(db.Boolean)
+        enum_field = db.Column(db.Enum('model1_v1', 'model1_v1'), nullable=True)
 
     class Model2(db.Model):
         def __init__(self, string_field=None, int_field=None, bool_field=None, model1=None):
@@ -45,6 +48,9 @@ def create_models(db):
         string_field = db.Column(db.String)
         int_field = db.Column(db.Integer)
         bool_field = db.Column(db.Boolean)
+        enum_field = db.Column(db.Enum('model2_v1', 'model2_v2'), nullable=True)
+
+        # Relation
         model1_id = db.Column(db.Integer, db.ForeignKey(Model1.id))
         model1 = db.relationship(Model1)
 
@@ -78,10 +84,10 @@ def test_model():
     eq_(view._filters, None)
 
     # Verify form
-    eq_(view._create_form_class.test1.field_class, wtf.TextField)
-    eq_(view._create_form_class.test2.field_class, wtf.TextField)
-    eq_(view._create_form_class.test3.field_class, wtf.TextAreaField)
-    eq_(view._create_form_class.test4.field_class, wtf.TextAreaField)
+    eq_(view._create_form_class.test1.field_class, fields.TextField)
+    eq_(view._create_form_class.test2.field_class, fields.TextField)
+    eq_(view._create_form_class.test3.field_class, fields.TextAreaField)
+    eq_(view._create_form_class.test4.field_class, fields.TextAreaField)
 
     # Make some test clients
     client = app.test_client()
@@ -97,14 +103,14 @@ def test_model():
     eq_(rv.status_code, 302)
 
     model = db.session.query(Model1).first()
-    eq_(model.test1, 'test1large')
-    eq_(model.test2, 'test2')
-    eq_(model.test3, '')
-    eq_(model.test4, '')
+    eq_(model.test1, u'test1large')
+    eq_(model.test2, u'test2')
+    eq_(model.test3, u'')
+    eq_(model.test4, u'')
 
     rv = client.get('/admin/model1view/')
     eq_(rv.status_code, 200)
-    ok_('test1large' in rv.data)
+    ok_(u'test1large' in rv.data.decode('utf-8'))
 
     url = '/admin/model1view/edit/?id=%s' % model.id
     rv = client.get(url)
@@ -153,8 +159,9 @@ def test_list_columns():
     client = app.test_client()
 
     rv = client.get('/admin/model1view/')
-    ok_('Column1' in rv.data)
-    ok_('Test2' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('Column1' in data)
+    ok_('Test2' not in data)
 
 
 def test_exclude_columns():
@@ -162,8 +169,10 @@ def test_exclude_columns():
 
     Model1, Model2 = create_models(db)
 
-    view = CustomModelView(Model1, db.session,
-                           column_exclude_list=['test2', 'test4'])
+    view = CustomModelView(
+        Model1, db.session,
+        column_exclude_list=['test2', 'test4', 'enum_field']
+    )
     admin.add_view(view)
 
     eq_(
@@ -174,8 +183,9 @@ def test_exclude_columns():
     client = app.test_client()
 
     rv = client.get('/admin/model1view/')
-    ok_('Test1' in rv.data)
-    ok_('Test2' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('Test1' in data)
+    ok_('Test2' not in data)
 
 
 def test_column_searchable_list():
@@ -201,8 +211,9 @@ def test_column_searchable_list():
     client = app.test_client()
 
     rv = client.get('/admin/model1view/?search=model1')
-    ok_('model1' in rv.data)
-    ok_('model2' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('model1' in data)
+    ok_('model2' not in data)
 
 
 def test_column_filters():
@@ -210,31 +221,32 @@ def test_column_filters():
 
     Model1, Model2 = create_models(db)
 
-    view = CustomModelView(Model1, db.session,
-                           column_filters=['test1'])
+    view = CustomModelView(
+        Model1, db.session,
+        column_filters=['test1']
+    )
     admin.add_view(view)
 
     eq_(len(view._filters), 4)
 
     eq_(view._filter_dict, {
-        'Test1': [
-            (0, 'equals'),
-            (1, 'not equal'),
-            (2, 'contains'),
-            (3, 'not contains')
-        ],
-    })
+        u'Test1': [
+            (0, u'equals'),
+            (1, u'not equal'),
+            (2, u'contains'),
+            (3, u'not contains')
+        ]})
 
     # Test filter that references property
     view = CustomModelView(Model2, db.session,
                            column_filters=['model1'])
 
     eq_(view._filter_dict, {
-        'Model1 / Test1': [
-            (0, 'equals'),
-            (1, 'not equal'),
-            (2, 'contains'),
-            (3, 'not contains')
+        u'Model1 / Test1': [
+            (0, u'equals'),
+            (1, u'not equal'),
+            (2, u'contains'),
+            (3, u'not contains')
         ],
         'Model1 / Test2': [
             (4, 'equals'),
@@ -242,23 +254,26 @@ def test_column_filters():
             (6, 'contains'),
             (7, 'not contains')
         ],
-        'Model1 / Test3': [
-            (8, 'equals'),
-            (9, 'not equal'),
-            (10, 'contains'),
-            (11, 'not contains')
+        u'Model1 / Test3': [
+            (8, u'equals'),
+            (9, u'not equal'),
+            (10, u'contains'),
+            (11, u'not contains')
         ],
-        'Model1 / Test4': [
-            (12, 'equals'),
-            (13, 'not equal'),
-            (14, 'contains'),
-            (15, 'not contains')
+        u'Model1 / Test4': [
+            (12, u'equals'),
+            (13, u'not equal'),
+            (14, u'contains'),
+            (15, u'not contains')
         ],
-        'Model1 / Bool Field': [
-            (16, 'equals'),
-            (17, 'not equal'),
+        u'Model1 / Bool Field': [
+            (16, u'equals'),
+            (17, u'not equal'),
         ],
-    })
+        u'Model1 / Enum Field': [
+            (18, u'equals'),
+            (19, u'not equal'),
+        ]})
 
     # Test filter with a dot
     view = CustomModelView(Model2, db.session,
@@ -268,8 +283,8 @@ def test_column_filters():
         'Model1 / Bool Field': [
             (0, 'equals'),
             (1, 'not equal'),
-        ],
-    })
+        ]})
+
     # Fill DB
     model1_obj1 = Model1('model1_obj1', bool_field=True)
     model1_obj2 = Model1('model1_obj2')
@@ -290,13 +305,15 @@ def test_column_filters():
 
     rv = client.get('/admin/model1view/?flt0_0=model1_obj1')
     eq_(rv.status_code, 200)
-    ok_('model1_obj1' in rv.data)
-    ok_('model1_obj2' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('model1_obj1' in data)
+    ok_('model1_obj2' not in data)
 
     rv = client.get('/admin/model1view/?flt0_5=model1_obj1')
     eq_(rv.status_code, 200)
-    ok_('model1_obj1' in rv.data)
-    ok_('model1_obj2' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('model1_obj1' in data)
+    ok_('model1_obj2' in data)
 
     # Test different filter types
     view = CustomModelView(Model2, db.session,
@@ -322,10 +339,11 @@ def test_column_filters():
 
     rv = client.get('/admin/_model2/?flt1_0=1')
     eq_(rv.status_code, 200)
-    ok_('model2_obj1' in rv.data)
-    ok_('model2_obj2' in rv.data)
-    ok_('model2_obj3' not in rv.data)
-    ok_('model2_obj4' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('model2_obj1' in data)
+    ok_('model2_obj2' in data)
+    ok_('model2_obj3' not in data)
+    ok_('model2_obj4' not in data)
 
 
 def test_url_args():
@@ -348,35 +366,42 @@ def test_url_args():
     client = app.test_client()
 
     rv = client.get('/admin/model1view/')
-    ok_('data1' in rv.data)
-    ok_('data3' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data1' in data)
+    ok_('data3' not in data)
 
     # page
     rv = client.get('/admin/model1view/?page=1')
-    ok_('data1' not in rv.data)
-    ok_('data3' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data1' not in data)
+    ok_('data3' in data)
 
     # sort
     rv = client.get('/admin/model1view/?sort=0&desc=1')
-    ok_('data1' not in rv.data)
-    ok_('data3' in rv.data)
-    ok_('data4' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data1' not in data)
+    ok_('data3' in data)
+    ok_('data4' in data)
 
     # search
     rv = client.get('/admin/model1view/?search=data1')
-    ok_('data1' in rv.data)
-    ok_('data2' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data1' in data)
+    ok_('data2' not in data)
 
     rv = client.get('/admin/model1view/?search=^data1')
-    ok_('data2' not in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data2' not in data)
 
     # like
     rv = client.get('/admin/model1view/?flt0=0&flt0v=data1')
-    ok_('data1' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data1' in data)
 
     # not like
     rv = client.get('/admin/model1view/?flt0=1&flt0v=data1')
-    ok_('data2' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('data2' in data)
 
 
 def test_non_int_pk():
@@ -402,19 +427,51 @@ def test_non_int_pk():
 
     rv = client.get('/admin/modelview/')
     eq_(rv.status_code, 200)
-    ok_('test1' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('test1' in data)
 
     rv = client.get('/admin/modelview/edit/?id=test1')
     eq_(rv.status_code, 200)
-    ok_('test2' in rv.data)
+    data = rv.data.decode('utf-8')
+    ok_('test2' in data)
 
 
-def test_form():
-    # TODO: form_columns
-    # TODO: form_excluded_columns
+def test_form_columns():
+    app, db, admin = setup()
+
+    class Model(db.Model):
+        id = db.Column(db.String, primary_key=True)
+        int_field = db.Column(db.Integer)
+        datetime_field = db.Column(db.DateTime)
+        text_field = db.Column(db.UnicodeText)
+        excluded_column = db.Column(db.String)
+
+    class ChildModel(db.Model):
+        id = db.Column(db.String, primary_key=True)
+        model_id = db.Column(db.Integer, db.ForeignKey(Model.id))
+        model = db.relationship(Model, backref='backref')
+
+    db.create_all()
+
+    view1 = CustomModelView(Model, db.session, endpoint='view1',
+                            form_columns=('int_field', 'text_field'))
+    view2 = CustomModelView(Model, db.session, endpoint='view2',
+                            form_excluded_columns=('excluded_column',))
+    view3 = CustomModelView(ChildModel, db.session, endpoint='view3')
+
+    form1 = view1.create_form()
+    form2 = view2.create_form()
+    form3 = view3.create_form()
+
+    ok_('int_field' in form1._fields)
+    ok_('text_field' in form1._fields)
+    ok_('datetime_field' not in form1._fields)
+
+    ok_('excluded_column' not in form2._fields)
+
+    ok_(type(form3.model).__name__ == 'QuerySelectField')
+
     # TODO: form_args
-    # TODO: Select columns
-    pass
 
 
 def test_form_override():
@@ -427,12 +484,12 @@ def test_form_override():
     db.create_all()
 
     view1 = CustomModelView(Model, db.session, endpoint='view1')
-    view2 = CustomModelView(Model, db.session, endpoint='view2', form_overrides=dict(test=wtf.FileField))
+    view2 = CustomModelView(Model, db.session, endpoint='view2', form_overrides=dict(test=fields.FileField))
     admin.add_view(view1)
     admin.add_view(view2)
 
-    eq_(view1._create_form_class.test.field_class, wtf.TextField)
-    eq_(view2._create_form_class.test.field_class, wtf.FileField)
+    eq_(view1._create_form_class.test.field_class, fields.TextField)
+    eq_(view2._create_form_class.test.field_class, fields.FileField)
 
 
 def test_relations():
@@ -446,7 +503,7 @@ def test_on_model_change_delete():
     db.create_all()
 
     class ModelView(CustomModelView):
-        def on_model_change(self, form, model):
+        def on_model_change(self, form, model, is_created):
             model.test1 = model.test1.upper()
 
         def on_model_delete(self, model):
@@ -458,7 +515,7 @@ def test_on_model_change_delete():
     client = app.test_client()
 
     client.post('/admin/model1view/new/',
-                     data=dict(test1='test1large', test2='test2'))
+                data=dict(test1='test1large', test2='test2'))
 
     model = db.session.query(Model1).first()
     eq_(model.test1, 'TEST1LARGE')
@@ -487,6 +544,98 @@ def test_multiple_delete():
 
     client = app.test_client()
 
-    rv = client.post('/admin/model1view/action/', data=dict(action='delete', rowid=[1,2,3]))
+    rv = client.post('/admin/model1view/action/', data=dict(action='delete', rowid=[1, 2, 3]))
     eq_(rv.status_code, 302)
     eq_(M1.query.count(), 0)
+
+
+def test_default_sort():
+    app, db, admin = setup()
+    M1, _ = create_models(db)
+
+    db.session.add_all([M1('c'), M1('b'), M1('a')])
+    db.session.commit()
+    eq_(M1.query.count(), 3)
+
+    view = CustomModelView(M1, db.session, column_default_sort='test1')
+    admin.add_view(view)
+
+    _, data = view.get_list(0, None, None, None, None)
+
+    eq_(len(data), 3)
+    eq_(data[0].test1, 'a')
+    eq_(data[1].test1, 'b')
+    eq_(data[2].test1, 'c')
+
+
+def test_extra_fields():
+    app, db, admin = setup()
+
+    Model1, _ = create_models(db)
+
+    view = CustomModelView(
+        Model1, db.session,
+        form_extra_fields={
+            'extra_field': fields.TextField('Extra Field')
+        }
+    )
+    admin.add_view(view)
+
+    client = app.test_client()
+
+    rv = client.get('/admin/model1view/new/')
+    eq_(rv.status_code, 200)
+
+    # Check presence and order
+    data = rv.data.decode('utf-8')
+    ok_('Extra Field' in data)
+    pos1 = data.find('Extra Field')
+    pos2 = data.find('Test1')
+    ok_(pos2 < pos1)
+
+
+def test_extra_field_order():
+    app, db, admin = setup()
+
+    Model1, _ = create_models(db)
+
+    view = CustomModelView(
+        Model1, db.session,
+        form_columns=('extra_field', 'test1'),
+        form_extra_fields={
+            'extra_field': fields.TextField('Extra Field')
+        }
+    )
+    admin.add_view(view)
+
+    client = app.test_client()
+
+    rv = client.get('/admin/model1view/new/')
+    eq_(rv.status_code, 200)
+
+    # Check presence and order
+    data = rv.data.decode('utf-8')
+    pos1 = data.find('Extra Field')
+    pos2 = data.find('Test1')
+    ok_(pos2 > pos1)
+
+
+# TODO: Babel tests
+def test_custom_form_base():
+    app, db, admin = setup()
+
+    class TestForm(form.BaseForm):
+        pass
+
+    Model1, _ = create_models(db)
+
+    view = CustomModelView(
+        Model1, db.session,
+        form_base_class=TestForm
+    )
+    admin.add_view(view)
+
+    ok_(hasattr(view._create_form_class, 'test1'))
+
+    create_form = view.create_form()
+    ok_(isinstance(create_form, TestForm))

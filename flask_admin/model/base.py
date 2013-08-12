@@ -1,3 +1,5 @@
+import warnings
+
 from flask import request, url_for, redirect, flash
 
 from jinja2 import contextfunction
@@ -5,9 +7,14 @@ from jinja2 import contextfunction
 from flask.ext.admin.babel import gettext
 
 from flask.ext.admin.base import BaseView, expose
-from flask.ext.admin.tools import rec_getattr, ObsoleteAttr
+from flask.ext.admin.form import BaseForm
 from flask.ext.admin.model import filters, typefmt
 from flask.ext.admin.actions import ActionsMixin
+from flask.ext.admin.helpers import get_form_data, validate_form_on_submit
+from flask.ext.admin.tools import rec_getattr
+from flask.ext.admin._backwards import ObsoleteAttr
+from flask.ext.admin._compat import iteritems, as_unicode
+from .helpers import prettify_name
 
 
 class BaseModelView(BaseView, ActionsMixin):
@@ -79,14 +86,15 @@ class BaseModelView(BaseView, ActionsMixin):
         two, you can do something like this::
 
             class MyModelView(BaseModelView):
-                column_formatters = dict(price=lambda c, m, p: m.price*2)
+                column_formatters = dict(price=lambda v, c, m, p: m.price*2)
 
         The Callback function has the prototype::
 
-            def formatter(context, model, name):
-                # context is instance of jinja2.runtime.Context
-                # model is model instance
-                # name is property name
+            def formatter(view, context, model, name):
+                # `view` is current administrative view
+                # `context` is instance of jinja2.runtime.Context
+                # `model` is model instance
+                # `name` is property name
                 pass
     """
 
@@ -117,6 +125,13 @@ class BaseModelView(BaseView, ActionsMixin):
                 column_type_formatters = MY_DEFAULT_FORMATTERS
 
         Type formatters have lower priority than list column formatters.
+
+        The callback function has following prototype::
+
+            def type_formatter(view, value):
+                # `view` is current administrative view
+                # `value` value to format
+                pass
     """
 
     column_labels = ObsoleteAttr('column_labels', 'rename_columns', None)
@@ -167,6 +182,22 @@ class BaseModelView(BaseView, ActionsMixin):
                 column_sortable_list = ('name', ('user', User.username))
     """
 
+    column_default_sort = None
+    """
+        Default sort column if no sorting is applied.
+
+        Example::
+
+            class MyModelView(BaseModelView):
+                column_default_sort = 'user'
+
+        You can use tuple to control ascending descending order. In following example, items
+        will be sorted in descending order::
+
+            class MyModelView(BaseModelView):
+                column_default_sort = ('user', True)
+    """
+
     column_searchable_list = ObsoleteAttr('column_searchable_list',
                                           'searchable_columns',
                                           None)
@@ -179,6 +210,20 @@ class BaseModelView(BaseView, ActionsMixin):
 
             class MyModelView(BaseModelView):
                 column_searchable_list = ('name', 'email')
+    """
+
+    column_choices = None
+    """
+        Map choices to columns in list view
+
+        Example::
+
+            class MyModelView(BaseModelView):
+                column_choices = {
+                    'my_column': [
+                        ('db_value', 'display_value'),
+                    ]
+                }
     """
 
     column_filters = None
@@ -203,14 +248,32 @@ class BaseModelView(BaseView, ActionsMixin):
     form = None
     """
         Form class. Override if you want to use custom form for your model.
+        Will completely disable form scaffolding functionality.
 
         For example::
 
-            class MyForm(wtf.Form):
-                pass
+            class MyForm(Form):
+                name = TextField('Name')
 
             class MyModelView(BaseModelView):
                 form = MyForm
+    """
+
+    form_base_class = BaseForm
+    """
+        Base form class. Will be used by form scaffolding function when creating model form.
+
+        Useful if you want to have custom contructor or override some fields.
+
+        Example::
+
+            class MyBaseForm(Form):
+                def do_something(self):
+                    pass
+
+            class MyModelView(BaseModelView):
+                form_base_class = MyBaseForm
+
     """
 
     form_args = None
@@ -222,7 +285,7 @@ class BaseModelView(BaseView, ActionsMixin):
 
             class MyModelView(BaseModelView):
                 form_args = dict(
-                    name=dict(label='First Name', validators=[wtf.required()])
+                    name=dict(label='First Name', validators=[required()])
                 )
     """
 
@@ -257,6 +320,45 @@ class BaseModelView(BaseView, ActionsMixin):
 
             class MyModelView(BaseModelView):
                 form_overrides = dict(name=wtf.FileField)
+    """
+
+    form_widget_args = None
+    """
+        Dictionary of form widget rendering arguments.
+        Use this to customize how widget is rendered without using custom template.
+
+        Example::
+
+            class MyModelView(BaseModelView):
+                form_widget_args = {
+                    'description': {
+                        'rows': 10,
+                        'style': 'color: black'
+                    }
+                }
+    """
+
+    form_extra_fields = None
+    """
+        Dictionary of additional fields.
+
+        Example::
+
+            class MyModelView(BaseModelView):
+                form_extra_fields = {
+                    password: PasswordField('Password')
+                }
+
+        You can control order of form fields using ``form_columns`` property. For example::
+
+            class MyModelView(BaseModelView):
+                form_columns = ('name', 'email', 'password', 'secret')
+
+                form_extra_fields = {
+                    password: PasswordField('Password')
+                }
+
+        In this case, password field will be put between email and secret fields that are autogenerated.
     """
 
     # Actions
@@ -294,11 +396,14 @@ class BaseModelView(BaseView, ActionsMixin):
                 'userview'
             :param url:
                 Base URL. If not provided, will use endpoint as a URL.
+            :param debug:
+                Enable debugging mode. Won't catch exceptions on model
+                save failures.
         """
 
         # If name not provided, it is model name
         if name is None:
-            name = '%s' % self._prettify_name(model.__name__)
+            name = '%s' % self.prettify_name(model.__name__)
 
         # If endpoint not provided, it is model name + 'view'
         if endpoint is None:
@@ -323,12 +428,28 @@ class BaseModelView(BaseView, ActionsMixin):
         self._list_columns = self.get_list_columns()
         self._sortable_columns = self.get_sortable_columns()
 
+        # Labels
+        if self.column_labels is None:
+            self.column_labels = {}
+
         # Forms
         self._create_form_class = self.get_create_form()
         self._edit_form_class = self.get_edit_form()
 
+        if self.form_widget_args is None:
+            self.form_widget_args = {}
+
         # Search
         self._search_supported = self.init_search()
+
+        # Choices
+        if self.column_choices:
+            self._column_choices_map = dict([
+                (column, dict(choices))
+                for column, choices in self.column_choices.items()
+            ])
+        else:
+            self.column_choices = self._column_choices_map = dict()
 
         # Filters
         self._filters = self.get_filters()
@@ -480,15 +601,14 @@ class BaseModelView(BaseView, ActionsMixin):
             collection = []
 
             for n in self.column_filters:
-                if not self.is_valid_filter(n):
+                if self.is_valid_filter(n):
+                    collection.append(n)
+                else:
                     flt = self.scaffold_filters(n)
                     if flt:
                         collection.extend(flt)
                     else:
                         raise Exception('Unsupported filter type %s' % n)
-                else:
-                    collection.append(n)
-
             return collection
         else:
             return None
@@ -536,7 +656,7 @@ class BaseModelView(BaseView, ActionsMixin):
 
             Override to implement custom behavior.
         """
-        return self._create_form_class(obj=obj)
+        return self._create_form_class(get_form_data(), obj=obj)
 
     def edit_form(self, obj=None):
         """
@@ -544,7 +664,7 @@ class BaseModelView(BaseView, ActionsMixin):
 
             Override to implement custom behavior.
         """
-        return self._edit_form_class(obj=obj)
+        return self._edit_form_class(get_form_data(), obj=obj)
 
     # Helpers
     def is_sortable(self, name):
@@ -564,6 +684,18 @@ class BaseModelView(BaseView, ActionsMixin):
             return None
 
         return self._list_columns[idx]
+
+    def _get_default_order(self):
+        """
+            Return default sort order
+        """
+        if self.column_default_sort:
+            if isinstance(self.column_default_sort, tuple):
+                return self.column_default_sort
+            else:
+                return self.column_default_sort, False
+
+        return None
 
     # Database-related API
     def get_list(self, page, sort_field, sort_desc, search, filters):
@@ -597,15 +729,53 @@ class BaseModelView(BaseView, ActionsMixin):
         """
         raise NotImplemented('Please implement get_one method')
 
-    # Model handlers
-    def on_model_change(self, form, model):
+    # Model event handlers
+    def on_model_change(self, form, model, is_created):
         """
             Perform some actions after a model is created or updated.
 
             Called from create_model and update_model in the same transaction
             (if it has any meaning for a store backend).
 
-            By default do nothing.
+            By default does nothing.
+
+            :param form:
+                Form used to create/update model
+            :param model:
+                Model that will be created/updated
+            :param is_created:
+                Will be set to True if model was created and to False if edited
+        """
+        pass
+
+    def _on_model_change(self, form, model, is_created):
+        """
+            Compatibility helper.
+        """
+        try:
+            self.on_model_change(form, model, is_created)
+        except TypeError:
+            msg = ('%s.on_model_change() now accepts third ' +
+                   'parameter is_created. Please update your code') % self.model
+            warnings.warn(msg)
+
+            self.on_model_change(form, model)
+
+    def after_model_change(self, form, model, is_created):
+        """
+            Perform some actions after a model was created or updated and
+            committed to the database.
+
+            Called from create_model after successful database commit.
+
+            By default does nothing.
+
+            :param form:
+                Form used to create/update model
+            :param model:
+                Model that was created/updated
+            :param is_created:
+                True if model was created, False if model was updated
         """
         pass
 
@@ -684,7 +854,7 @@ class BaseModelView(BaseView, ActionsMixin):
             :param name:
                 Name to prettify
         """
-        return name.replace('_', ' ').title()
+        return prettify_name(name)
 
     # URL generation helper
     def _get_extra_args(self):
@@ -770,6 +940,18 @@ class BaseModelView(BaseView, ActionsMixin):
         """
         return name not in self.action_disallowed_list
 
+    def _get_field_value(self, model, name):
+        """
+            Get unformatted field value from the model
+        """
+        return rec_getattr(model, name)
+
+    def _get_filter_dict(self):
+        """
+            Return flattened filter dictionary which can be JSON-serialized.
+        """
+        return dict((as_unicode(k), v) for k, v in iteritems(self._filter_dict))
+
     @contextfunction
     def get_list_value(self, context, model, name):
         """
@@ -784,13 +966,17 @@ class BaseModelView(BaseView, ActionsMixin):
         """
         column_fmt = self.column_formatters.get(name)
         if column_fmt is not None:
-            return column_fmt(context, model, name)
+            return column_fmt(self, context, model, name)
 
-        value = rec_getattr(model, name)
+        value = self._get_field_value(model, name)
+
+        choices_map = self._column_choices_map.get(name, {})
+        if choices_map:
+            return choices_map.get(value) or value
 
         type_fmt = self.column_type_formatters.get(type(value))
         if type_fmt is not None:
-            value = type_fmt(value)
+            value = type_fmt(self, value)
 
         return value
 
@@ -813,7 +999,7 @@ class BaseModelView(BaseView, ActionsMixin):
                                     search, filters)
 
         # Calculate number of pages
-        num_pages = count / self.page_size
+        num_pages = count // self.page_size
         if count % self.page_size != 0:
             num_pages += 1
 
@@ -890,8 +1076,7 @@ class BaseModelView(BaseView, ActionsMixin):
 
                                # Actions
                                actions=actions,
-                               actions_confirmation=actions_confirmation
-                               )
+                               actions_confirmation=actions_confirmation)
 
     @expose('/new/', methods=('GET', 'POST'))
     def create_view(self):
@@ -905,7 +1090,7 @@ class BaseModelView(BaseView, ActionsMixin):
 
         form = self.create_form()
 
-        if form.validate_on_submit():
+        if validate_form_on_submit(form):
             if self.create_model(form):
                 if '_add_another' in request.form:
                     flash(gettext('Model was successfully created.'))
@@ -915,6 +1100,7 @@ class BaseModelView(BaseView, ActionsMixin):
 
         return self.render(self.create_template,
                            form=form,
+                           form_widget_args=self.form_widget_args,
                            return_url=return_url)
 
     @expose('/edit/', methods=('GET', 'POST'))
@@ -938,13 +1124,19 @@ class BaseModelView(BaseView, ActionsMixin):
 
         form = self.edit_form(obj=model)
 
-        if form.validate_on_submit():
+        if validate_form_on_submit(form):
             if self.update_model(form, model):
-                return redirect(return_url)
+                if '_continue_editing' in request.form:
+                    flash(gettext('Model was successfully saved.'))
+                    return redirect(request.full_path)
+                else:
+                    return redirect(return_url)
 
         return self.render(self.edit_template,
-                               form=form,
-                               return_url=return_url)
+                           model=model,
+                           form=form,
+                           form_widget_args=self.form_widget_args,
+                           return_url=return_url)
 
     @expose('/delete/', methods=('POST',))
     def delete_view(self):

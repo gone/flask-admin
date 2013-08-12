@@ -1,11 +1,9 @@
 {% macro dropdown(actions, btn_class='dropdown-toggle') -%}
-    <a class="{{ btn_class }}" data-toggle="dropdown" href="#">
-        {{ _gettext('With selected') }}<b class="caret"></b>
-    </a>
+    <a class="{{ btn_class }}" data-toggle="dropdown" href="javascript:void(0)">{{ _gettext('With selected') }}<b class="caret"></b></a>
     <ul class="dropdown-menu">
         {% for p in actions %}
         <li>
-            <a href="#" onclick="return modelActions.execute('{{ p[0] }}');">{{ _gettext(p[1]) }}</a>
+            <a href="javascript:void(0)" onclick="return modelActions.execute('{{ p[0] }}');">{{ _gettext(p[1]) }}</a>
         </li>
         {% endfor %}
     </ul>
@@ -21,7 +19,7 @@
 
 {% macro script(message, actions, actions_confirmation) %}
     {% if actions %}
-    <script src="{{ url_for('admin.static', filename='js/actions.js') }}"></script>
+    <script src="{{ url_for('admin.static', filename='admin/js/actions.js') }}"></script>
     <script language="javascript">
         var modelActions = new AdminModelActions({{ message|tojson|safe }}, {{ actions_confirmation|tojson|safe }});
     </script>
